@@ -31,20 +31,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRICES_PATH = os.path.join(ROOT, "prices.json")
+# The list of symbols to price, with display metadata ({s, n, t, g, f}). Edit this file to
+# add or remove names. Anything already in prices.json but missing here is still priced,
+# so a student's holding never silently disappears; delete it from both to retire it.
+SYMBOLS_PATH = os.path.join(ROOT, "symbols.json")
 CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2y&includeAdjustedClose=true"
 UA = {"User-Agent": "Classets/1.0 (classroom simulator; one daily close)"}
-WORKERS = 6
+WORKERS = 8
 # A handful of delistings should not freeze the other 700 names. A wide
 # failure means Yahoo throttled or changed the response, and the old file
 # is safer than a half-updated one.
 MAX_DROPPED = 15
+MAX_DROPPED_SHARE = 0.02   # with ~1,900 names, allow up to 2% (38) before refusing
 
 
 def yahoo_symbol(sym):
-    """Yahoo writes class shares with a hyphen. The app keeps the dot."""
-    if sym in ("BRK.B", "BF.B"):
-        return sym.replace(".", "-")
-    return sym
+    """Yahoo writes class shares with a hyphen (BRK-B, MOG-A). The app keeps the dot."""
+    return sym.replace(".", "-")
 
 
 def add_months(d, months):
@@ -152,6 +155,17 @@ def completed_bars(payload, now):
             adj = float(adjusted[i])
         day = datetime.datetime.fromtimestamp(stamp, tz).date()
         bars.append((day, close, adj))
+    # Yahoo sometimes publishes a finished session's daily bar late, or with a null
+    # close, for hours after the bell (on 2026-11-10 the evening run still saw 11-09 as
+    # the last bar). The chart meta already carries that session's official close, so
+    # when the meta is for a completed session newer than the last bar, use it.
+    rmt = meta.get("regularMarketTime")
+    rmp = meta.get("regularMarketPrice")
+    if rmt and rmp and float(rmp) > 0:
+        forming = bool(session_start and session_end and now < session_end and rmt >= session_start)
+        rday = datetime.datetime.fromtimestamp(rmt, tz).date()
+        if not forming and (not bars or rday > bars[-1][0]):
+            bars.append((rday, float(rmp), float(rmp)))
     if not bars:
         raise ValueError("no completed bars")
     return bars
@@ -179,12 +193,31 @@ def fetch_chart(sym, now=None, attempts=4):
     raise RuntimeError("%s: %s" % (sym, last_err))
 
 
-def build_prices(previous, spy_bars, series, now_date):
+def universe(previous):
+    """symbols.json first (the curated list), then anything only in the old file."""
+    out, seen = [], set()
+    try:
+        with open(SYMBOLS_PATH) as fh:
+            listed = json.load(fh)
+    except FileNotFoundError:
+        listed = []
+    for x in listed + previous["items"]:
+        s = x.get("s")
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append({"s": s, "n": x.get("n") or s, "t": x.get("t") or "stock",
+                    "g": x.get("g") or "Stocks", "f": x.get("f", 0)})
+    out.sort(key=lambda x: x["s"])
+    return out
+
+
+def build_prices(previous, spy_bars, series, now_date, names=None):
     as_of = spy_bars[-1][0]
     targets = anchor_targets([b[0] for b in spy_bars], as_of)
     items = []
     dropped = []
-    for old in previous["items"]:
+    for old in (names if names is not None else previous["items"]):
         bars = series.get(old["s"])
         if not bars:
             dropped.append(old["s"])
@@ -203,7 +236,8 @@ def build_prices(previous, spy_bars, series, now_date):
             "r": rets,
             "f": old.get("f", 0),
         })
-    if len(dropped) > MAX_DROPPED or len(items) < 100:
+    allowed = max(MAX_DROPPED, int(MAX_DROPPED_SHARE * (len(items) + len(dropped))))
+    if len(dropped) > allowed or len(items) < 100:
         raise SystemExit(
             "refresh aborted: %d symbols failed (%s). prices.json was not changed."
             % (len(dropped), ", ".join(dropped[:20]))
@@ -234,7 +268,8 @@ def write_prices(data):
 
 def refresh():
     previous = load_previous()
-    symbols = [item["s"] for item in previous["items"]]
+    names = universe(previous)
+    symbols = [item["s"] for item in names]
     if "SPY" not in symbols:
         raise SystemExit("SPY is missing from prices.json; it sets the session calendar")
     print("fetching %d symbols from Yahoo" % len(symbols), file=sys.stderr)
@@ -254,7 +289,8 @@ def refresh():
                 print("  %d/%d" % (done, len(symbols)), file=sys.stderr)
     if "SPY" not in series:
         raise SystemExit("SPY failed (%s); prices.json was not changed" % "; ".join(errors[:5]))
-    data, dropped = build_prices(previous, series["SPY"], series, datetime.datetime.now(datetime.timezone.utc).date())
+    data, dropped = build_prices(previous, series["SPY"], series,
+                                 datetime.datetime.now(datetime.timezone.utc).date(), names)
     write_prices(data)
     print("asOf %s  symbols %d  dropped %d" % (data["asOf"], len(data["items"]), len(dropped)))
     if dropped:
@@ -312,6 +348,19 @@ def self_test():
     assert len(kept) == 1 and kept[0][1] == 10.0, kept
     both = completed_bars(payload, now=today_open + 7 * 3600)
     assert len(both) == 2 and both[-1][1] == 11.0, both
+
+    # A finished session missing from the bars is taken from the meta's close...
+    late = json.loads(json.dumps(payload))
+    late["chart"]["result"][0]["timestamp"] = [today_open - 86400]
+    late["chart"]["result"][0]["indicators"] = {"quote": [{"close": [10.0]}], "adjclose": [{"adjclose": [10.0]}]}
+    late["chart"]["result"][0]["meta"].update({"regularMarketTime": today_open + 6 * 3600 + 1,
+                                               "regularMarketPrice": 12.5})
+    got = completed_bars(late, now=today_open + 9 * 3600)
+    assert len(got) == 2 and got[-1][1] == 12.5, got
+    # ...but never while that session is still trading.
+    late["chart"]["result"][0]["meta"]["regularMarketTime"] = today_open + 3600
+    got = completed_bars(late, now=today_open + 2 * 3600)
+    assert len(got) == 1 and got[-1][1] == 10.0, got
     print("self-test ok")
 
 
