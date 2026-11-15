@@ -4,6 +4,11 @@ name: Refresh prices
 # Writes prices.json at the repository root from Yahoo's latest completed daily close.
 # GitHub Pages serves that file at https://prices.bigyetigames.com/prices.json.
 # See src/refresh_prices.py.
+# Then writes news.json (recent SEC EDGAR filings for the stocks in prices.json) for the
+# app's detailed recap. That step is optional: if it fails or runs long, prices still publish.
+# See src/refresh_news.py. SEC asks for a User-Agent with a contact email: set the repository
+# variable SEC_USER_AGENT (Settings > Secrets and variables > Actions > Variables), for
+# example "Classets prices you@example.com". Without it the news step is skipped.
 on:
   schedule:
     - cron: "30 21 * * 1-5"
@@ -22,14 +27,21 @@ jobs:
           python-version: "3.12"
       - name: Rebuild prices.json
         run: python3 src/refresh_prices.py
+      - name: Rebuild news.json (optional)
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+        run: python3 src/refresh_news.py
       - name: Commit the snapshot
         run: |
           git config user.name "Classets prices"
           git config user.email "prices@users.noreply.github.com"
           git add prices.json
+          if [ -f news.json ]; then git add news.json; fi
           if git diff --cached --quiet; then
             echo "prices unchanged"
           else
-            git commit -m "Refresh market prices from the latest completed close"
+            git commit -m "Refresh market prices (and filings) from the latest completed close"
             git push
           fi
