@@ -24,6 +24,6 @@ How it works: `src/refresh_news.py` maps the stocks in `prices.json` to SEC CIK 
 
 Format: `{asOf, built, source, days, since, note, items: {SYMBOL: [{t, k, c, src, d, at, u}]}}` with up to 3 filings per symbol (title, form/item, category, source, filing date, acceptance time, link to the filing on sec.gov).
 
-Set the repository variable `SEC_USER_AGENT` to a name and contact email (for example `Classets prices you@example.com`). Without an email the step skips itself. The step is fail-soft: on any error it keeps the previous `news.json`, exits 0, and `prices.json` is committed as usual. A run takes about 5 minutes, well inside the free GitHub Actions allowance for public repositories.
+The workflow sends `Classets prices headyeti@bigyetigames.com` as the SEC User-Agent. The repository variable `SEC_USER_AGENT` overrides that contact when it is set (a name and email, for example `Classets prices you@example.com`). A local run still skips itself when `SEC_USER_AGENT` is unset or has no email, and does not change `news.json`. The step is fail-soft: on any error it keeps the previous `news.json`, exits 0, and `prices.json` is committed as usual. A run takes about 5 minutes, well inside the free GitHub Actions allowance for public repositories.
 
 `python3 src/refresh_news.py --check` tests the parsers without using the network.

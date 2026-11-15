@@ -6,9 +6,9 @@ name: Refresh prices
 # See src/refresh_prices.py.
 # Then writes news.json (recent SEC EDGAR filings for the stocks in prices.json) for the
 # app's detailed recap. That step is optional: if it fails or runs long, prices still publish.
-# See src/refresh_news.py. SEC asks for a User-Agent with a contact email: set the repository
-# variable SEC_USER_AGENT (Settings > Secrets and variables > Actions > Variables), for
-# example "Classets prices you@example.com". Without it the news step is skipped.
+# See src/refresh_news.py. SEC asks for a User-Agent with a contact email. The default
+# is "Classets prices headyeti@bigyetigames.com". The repository variable SEC_USER_AGENT
+# (Settings > Secrets and variables > Actions > Variables) overrides that contact.
 on:
   schedule:
     - cron: "30 21 * * 1-5"
@@ -31,7 +31,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 10
         env:
-          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || 'Classets prices headyeti@bigyetigames.com' }}
         run: python3 src/refresh_news.py
       - name: Commit the snapshot
         run: |

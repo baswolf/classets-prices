@@ -27,7 +27,7 @@ Up to three filings per symbol, newest first, from the last three US business da
 The job is fail-soft: any problem leaves the previous news.json in place and exits 0,
 so prices.json still publishes.
 
-    SEC_USER_AGENT="Classets (Big Yeti Games) you@example.com" python3 src/refresh_news.py
+    SEC_USER_AGENT="Classets prices headyeti@bigyetigames.com" python3 src/refresh_news.py
     python3 src/refresh_news.py --check      # parser tests, no network
 """
 import datetime
